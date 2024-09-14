@@ -1,4 +1,4 @@
-const axios = require('axios');
+const cloudscraper = require('cloudscraper');
 const colors = require('colors');
 const fs = require('fs');
 const path = require('path');
@@ -9,6 +9,7 @@ const readline = require('readline');
 class BananaBot {
     constructor() {
         this.base_url = 'https://interface.carv.io/banana';
+        this.bananasOverOneUSDT = [];
         this.headers = {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/plain, */*',
@@ -31,6 +32,26 @@ class BananaBot {
         console.log(`[*] ${msg}`);
     }
 
+    async makeRequest(method, url, data = null) {
+        const options = {
+            method: method,
+            uri: url,
+            headers: this.headers,
+            json: true
+        };
+
+        if (data) {
+            options.body = data;
+        }
+
+        try {
+            return await cloudscraper(options);
+        } catch (error) {
+            this.log(`Error in request: ${error.message}`);
+            throw error;
+        }
+    }
+
     async login(queryId) {
         const loginPayload = {
             tgInfo: queryId,
@@ -38,12 +59,11 @@ class BananaBot {
         };
 
         try {
-            const response = await axios.post(`${this.base_url}/login`, loginPayload, { headers: this.headers });
+            const response = await this.makeRequest('POST', `${this.base_url}/login`, loginPayload);
             await this.sleep(1000);
 
-            const responseData = response.data;
-            if (responseData.data && responseData.data.token) {
-                return responseData.data.token;
+            if (response.data && response.data.token) {
+                return response.data.token;
             } else {
                 this.log('Không tìm thấy token.');
                 return null;
@@ -57,7 +77,7 @@ class BananaBot {
     async achieveQuest(questId) {
         const achievePayload = { quest_id: questId };
         try {
-            return await axios.post(`${this.base_url}/achieve_quest`, achievePayload, { headers: this.headers });
+            return await this.makeRequest('POST', `${this.base_url}/achieve_quest`, achievePayload);
         } catch (error) {
             this.log('Lỗi khi làm nhiệm vụ: ' + error.message);
         }
@@ -66,7 +86,7 @@ class BananaBot {
     async claimQuest(questId) {
         const claimPayload = { quest_id: questId };
         try {
-            return await axios.post(`${this.base_url}/claim_quest`, claimPayload, { headers: this.headers });
+            return await this.makeRequest('POST', `${this.base_url}/claim_quest`, claimPayload);
         } catch (error) {
             this.log('Lỗi khi claim nhiệm vụ: ' + error.message);
         }
@@ -75,8 +95,8 @@ class BananaBot {
     async doClick(clickCount) {
         const clickPayload = { clickCount: clickCount };
         try {
-            const response = await axios.post(`${this.base_url}/do_click`, clickPayload, { headers: this.headers });
-            return response.data;
+            const response = await this.makeRequest('POST', `${this.base_url}/do_click`, clickPayload);
+            return response;
         } catch (error) {
             this.log('Lỗi khi tap: ' + error.message);
             return null;
@@ -85,7 +105,7 @@ class BananaBot {
 
     async getLotteryInfo() {
         try {
-            return await axios.get(`${this.base_url}/get_lottery_info`, { headers: this.headers });
+            return await this.makeRequest('GET', `${this.base_url}/get_lottery_info`);
         } catch (error) {
             this.log('Lỗi khi lấy thông tin: ' + error.message);
         }
@@ -94,7 +114,7 @@ class BananaBot {
     async claimLottery() {
         const claimPayload = { claimLotteryType: 1 };
         try {
-            return await axios.post(`${this.base_url}/claim_lottery`, claimPayload, { headers: this.headers });
+            return await this.makeRequest('POST', `${this.base_url}/claim_lottery`, claimPayload);
         } catch (error) {
             this.log('Lỗi không thể harvest: ' + error.message);
         }
@@ -102,7 +122,7 @@ class BananaBot {
 
     async doLottery() {
         try {
-            return await axios.post(`${this.base_url}/do_lottery`, {}, { headers: this.headers });
+            return await this.makeRequest('POST', `${this.base_url}/do_lottery`);
         } catch (error) {
             this.log('Lỗi khi claim tap: ' + error.message);
         }
@@ -137,31 +157,52 @@ class BananaBot {
         });
     }
 
-    async equipBestBanana(currentEquipBananaId) {
+    async equipBestBanana(currentEquipBananaId, accountIndex) {
         try {
-            const response = await axios.get(`${this.base_url}/get_banana_list`, { headers: this.headers });
-            const bananas = response.data.data.banana_list;
-    
+            const response = await this.makeRequest('GET', `${this.base_url}/get_banana_list`);
+            const bananas = response.data.banana_list;
+
             const eligibleBananas = bananas.filter(banana => banana.count >= 1);
             if (eligibleBananas.length > 0) {
                 const bestBanana = eligibleBananas.reduce((prev, current) => {
                     return (prev.daily_peel_limit > current.daily_peel_limit) ? prev : current;
                 });
-    
+
                 if (bestBanana.banana_id === currentEquipBananaId) {
                     this.log(colors.green(`Đang sử dụng quả chuối tốt nhất: ${colors.yellow(bestBanana.name)} | Price : ${colors.yellow(bestBanana.sell_exchange_peel)} Peels / ${colors.yellow(bestBanana.sell_exchange_usdt)} USDT.`));
                     
-                    if (bestBanana.sell_exchange_usdt >= 1) {
+                    if (bestBanana.sell_exchange_usdt >= 0.1) {
                         this.log(colors.red(`Đã đạt mục tiêu! Giá trị USDT của chuối: ${colors.yellow(bestBanana.sell_exchange_usdt)} USDT`));
-                        process.exit(0);
+
+                        const filePath = path.join(__dirname, 'banana.txt');
+                        const newBananaInfo = `Account ${accountIndex + 1}: ${bestBanana.name} - ${bestBanana.sell_exchange_usdt} USDT`;
+                        
+                        let fileContent = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8').split('\n') : [];
+                        
+                        let updated = false;
+                        for (let i = 0; i < fileContent.length; i++) {
+                            if (fileContent[i].startsWith(`Account ${accountIndex + 1}:`)) {
+                                const currentUSDT = parseFloat(fileContent[i].split(' - ')[1]);
+                                if (bestBanana.sell_exchange_usdt > currentUSDT) {
+                                    fileContent[i] = newBananaInfo;
+                                }
+                                updated = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!updated) {
+                            fileContent.push(newBananaInfo);
+                        }
+                        
+                        fs.writeFileSync(filePath, fileContent.join('\n'));
                     }
-                    
                     return;
                 }
-    
+
                 const equipPayload = { bananaId: bestBanana.banana_id };
-                const equipResponse = await axios.post(`${this.base_url}/do_equip`, equipPayload, { headers: this.headers });
-                if (equipResponse.data.code === 0) {
+                const equipResponse = await this.makeRequest('POST', `${this.base_url}/do_equip`, equipPayload);
+                if (equipResponse.code === 0) {
                     this.log(colors.green(`Đã Equip quả chuối tốt nhất: ${colors.yellow(bestBanana.name)} với ${bestBanana.daily_peel_limit} 🍌/ DAY`));
                 } else {
                     this.log(colors.red('Sử dụng chuối thất bại!'));
@@ -173,7 +214,7 @@ class BananaBot {
             this.log('Lỗi rồi: ' + error.message);
         }
     }
-	
+
     askQuestion(query) {
         const rl = readline.createInterface({
             input: process.stdin,
@@ -190,10 +231,10 @@ class BananaBot {
         let speedupsPerformed = 0;
         while (speedupsPerformed < maxSpeedups) {
             try {
-                const response = await axios.post(`${this.base_url}/do_speedup`, {}, { headers: this.headers });
-                if (response.data.code === 0) {
-                    const speedupCount = response.data.data.speedup_count;
-                    const lotteryInfo = response.data.data.lottery_info;
+                const response = await this.makeRequest('POST', `${this.base_url}/do_speedup`);
+                if (response.code === 0) {
+                    const speedupCount = response.data.speedup_count;
+                    const lotteryInfo = response.data.lottery_info;
                     speedupsPerformed++;
                     this.log(colors.green(`Speedup thành công! Còn lại ${speedupCount} lần speedup. Đã thực hiện ${speedupsPerformed}/${maxSpeedups} lần.`));
     
@@ -217,7 +258,7 @@ class BananaBot {
         }
     }
 
-    async processAccount(queryId, isFirstAccount = false, doQuests) {
+    async processAccount(queryId, doQuests, accountIndex) {
         let remainingTimeMinutes = Infinity;
         const token = await this.login(queryId);
         if (token) {
@@ -226,10 +267,10 @@ class BananaBot {
             this.headers['Pragma'] = 'no-cache';
     
             try {
-                const userInfoResponse = await axios.get(`${this.base_url}/get_user_info`, { headers: this.headers });
+                const userInfoResponse = await this.makeRequest('GET', `${this.base_url}/get_user_info`);
                 this.log(colors.green('Đăng nhập thành công !'));
                 await this.sleep(1000);
-                const userInfoData = userInfoResponse.data;
+                const userInfoData = userInfoResponse;
     
                 const userInfo = userInfoData.data || {};
                 const peel = userInfo.peel || 'N/A';
@@ -244,12 +285,12 @@ class BananaBot {
                 this.log(colors.green(`Speed Up : ${colors.white(speedup)}`));
                 this.log(colors.green(`Hôm nay đã tap : ${colors.white(todayClickCount)} lần`));
     
-                await this.equipBestBanana(currentEquipBananaId);
-    
+                await this.equipBestBanana(currentEquipBananaId, accountIndex);
+
                 try {
                     const lotteryInfoResponse = await this.getLotteryInfo();
                     await this.sleep(1000);
-                    const lotteryInfoData = lotteryInfoResponse.data;
+                    const lotteryInfoData = lotteryInfoResponse;
                     let remainLotteryCount = (lotteryInfoData.data || {}).remain_lottery_count || 0;
                     remainingTimeMinutes = this.calculateRemainingTime(lotteryInfoData.data || {});
     
@@ -259,7 +300,7 @@ class BananaBot {
                         
                         const updatedLotteryInfoResponse = await this.getLotteryInfo();
                         await this.sleep(1000);
-                        const updatedLotteryInfoData = updatedLotteryInfoResponse.data;
+                        const updatedLotteryInfoData = updatedLotteryInfoResponse;
                         remainLotteryCount = (updatedLotteryInfoData.data || {}).remain_lottery_count || 0;
                         remainingTimeMinutes = this.calculateRemainingTime(updatedLotteryInfoData.data || {});
                     }
@@ -272,7 +313,6 @@ class BananaBot {
                             remainingTimeMinutes = this.calculateRemainingTime(speedupLotteryInfo);
                         }
                     }
-    
                     const remainingDuration = Duration.fromMillis(remainingTimeMinutes * 60 * 1000);
                     const remainingHours = Math.floor(remainingDuration.as('hours'));
                     const remainingMinutes = Math.floor(remainingDuration.as('minutes')) % 60;
@@ -286,13 +326,13 @@ class BananaBot {
                         for (let i = 0; i < remainLotteryCount; i++) {
                             this.log(`Đang harvest lần thứ ${i + 1}/${remainLotteryCount}...`);
                             const doLotteryResponse = await this.doLottery();
-    
-                            if (doLotteryResponse.status === 200) {
-                                const lotteryResult = doLotteryResponse.data.data || {};
+
+                            if (doLotteryResponse.code === 0) {
+                                const lotteryResult = doLotteryResponse.data || {};
                                 const bananaName = lotteryResult.name || 'N/A';
                                 const sellExchangePeel = lotteryResult.sell_exchange_peel || 'N/A';
                                 const sellExchangeUsdt = lotteryResult.sell_exchange_usdt || 'N/A';
-    
+
                                 this.log(`Harvest thành công ${bananaName}`);
                                 console.log(colors.yellow(`     - Banana Name : ${bananaName}`));
                                 console.log(colors.yellow(`     - Peel Limit : ${lotteryResult.daily_peel_limit || 'N/A'}`));
@@ -335,8 +375,8 @@ class BananaBot {
                             await this.sleep(1000);
                         }
                 
-                        const userInfoResponse = await axios.get(`${this.base_url}/get_user_info`, { headers: this.headers });
-                        const userInfo = userInfoResponse.data.data || {};
+                        const userInfoResponse = await this.makeRequest('GET', `${this.base_url}/get_user_info`);
+                        const userInfo = userInfoResponse.data || {};
                         const updatedSpeedup = userInfo.speedup_count || 0;
                 
                         if (updatedSpeedup > 0) {
@@ -362,9 +402,9 @@ class BananaBot {
                 
                 if (doQuests) {
                     try {
-                        const questListResponse = await axios.get(`${this.base_url}/get_quest_list`, { headers: this.headers });
+                        const questListResponse = await this.makeRequest('GET', `${this.base_url}/get_quest_list`);
                         await this.sleep(1000);
-                        const questListData = questListResponse.data;
+                        const questListData = questListResponse;
         
                         const questList = (questListData.data || {}).quest_list || [];
                         for (let i = 0; i < questList.length; i++) {
@@ -378,8 +418,8 @@ class BananaBot {
                                 await this.achieveQuest(questId);
                                 await this.sleep(1000);
         
-                                const updatedQuestListResponse = await axios.get(`${this.base_url}/get_quest_list`, { headers: this.headers });
-                                const updatedQuestListData = updatedQuestListResponse.data;
+                                const updatedQuestListResponse = await this.makeRequest('GET', `${this.base_url}/get_quest_list`);
+                                const updatedQuestListData = updatedQuestListResponse;
                                 const updatedQuest = updatedQuestListData.data.quest_list.find(q => q.quest_id === questId);
                                 isAchieved = updatedQuest.is_achieved || false;
                             }
@@ -388,8 +428,8 @@ class BananaBot {
                                 await this.claimQuest(questId);
                                 await this.sleep(1000);
         
-                                const updatedQuestListResponse = await axios.get(`${this.base_url}/get_quest_list`, { headers: this.headers });
-                                const updatedQuestListData = updatedQuestListResponse.data;
+                                const updatedQuestListResponse = await this.makeRequest('GET', `${this.base_url}/get_quest_list`);
+                                const updatedQuestListData = updatedQuestListResponse;
                                 const updatedQuest = updatedQuestListData.data.quest_list.find(q => q.quest_id === questId);
                                 isClaimed = updatedQuest.is_claimed || false;
                             }
@@ -411,8 +451,8 @@ class BananaBot {
         
                         if (isClaimedQuestLottery) {
                             this.log(colors.yellow(`Claim quest có sẵn: ${progress}`));
-                            const claimQuestLotteryResponse = await axios.post(`${this.base_url}/claim_quest_lottery`, {}, { headers: this.headers });
-                            if (claimQuestLotteryResponse.data.code === 0) {
+                            const claimQuestLotteryResponse = await this.makeRequest('POST', `${this.base_url}/claim_quest_lottery`);
+                            if (claimQuestLotteryResponse.code === 0) {
                                 this.log(colors.green('Claim quest thành công!'));
                             } else {
                                 this.log(colors.red('Claim quest thất bại!'));
@@ -429,13 +469,10 @@ class BananaBot {
             } catch (error) {
                 this.log('Không thể tìm nạp thông tin người dùng và danh sách nhiệm vụ do thiếu mã thông báo.');
             }
-    
-            if (isFirstAccount) {
-                return remainingTimeMinutes;
-            }
+            return remainingTimeMinutes;
         }
         return null;
-    } 
+    }    
 
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
@@ -470,10 +507,10 @@ class BananaBot {
         
         const doQuestsAnswer = await this.askQuestion('Bạn có muốn làm nhiệm vụ không? (y/n): ');
         const doQuests = doQuestsAnswer.toLowerCase() === 'y';
-        
+
         while (true) {
             let minRemainingTime = Infinity;
-    
+
             for (let i = 0; i < userData.length; i++) {
                 const queryId = userData[i];
                 const data = this.extractUserData(queryId);
@@ -481,26 +518,22 @@ class BananaBot {
                 
                 if (queryId) {
                     console.log(`\n========== Tài khoản ${i + 1} | ${userDetail.first_name} ==========`);
-                    const remainingTime = await this.processAccount(queryId, i === 0, doQuests);
-    
-                    if (i === 0 && remainingTime !== null) {
+                    const remainingTime = await this.processAccount(queryId, doQuests, i);
+
+                    if (remainingTime !== null && remainingTime < minRemainingTime) {
                         minRemainingTime = remainingTime;
                     }
                 }
                 
                 await this.sleep(1000); 
             }
-    
-            if (minRemainingTime < Infinity) {
-                const remainingDuration = Duration.fromMillis(minRemainingTime * 60 * 1000);
-                const remainingSeconds = remainingDuration.as('seconds');
-                await this.Countdown(remainingSeconds); 
-            } else {
-                await this.Countdown(10 * 60);
-            }
+
+            const remainingDuration = Duration.fromMillis(minRemainingTime * 60 * 1000);
+            const remainingSeconds = remainingDuration.as('seconds');
+            await this.Countdown(remainingSeconds > 0 ? remainingSeconds : 10 * 60);
         }
     }
-}
+}    
 
 const bot = new BananaBot();
 bot.main();
